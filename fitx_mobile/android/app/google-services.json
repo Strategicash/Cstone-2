@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "34344699875",
+    "project_id": "fitx-training-club",
+    "storage_bucket": "fitx-training-club.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:34344699875:android:5cf485389eb3801aa8c2d6",
+        "android_client_info": {
+          "package_name": "com.example.fitx_mobile"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBDJHPa8Jd2p80t_ktZlqubQ5fWoCSnuGY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
