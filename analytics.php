@@ -63,18 +63,20 @@ $conn->close();
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
     :root{--bg:#0d0d0d;--surface:#141414;--card:#1a1a1a;--border:#252525;--border2:#303030;--text:#f0f0f0;--sub:#666;--muted:#999;--red:#dc2626;--red-dim:rgba(220,38,38,0.12);--green:#16a34a;--green-dim:rgba(22,163,74,0.12);--blue:#2563eb;--blue-dim:rgba(37,99,235,0.12);--amber:#d97706;--amber-dim:rgba(217,119,6,0.12);--font:'Inter',sans-serif;--nav-h:56px;--banner-h:140px}
     body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:100vh}
-    .topnav{position:sticky;top:0;z-index:100;background:var(--surface);border-bottom:1px solid var(--border);height:var(--nav-h);display:flex;align-items:center;padding:0 32px;gap:20px}
-    .nav-brand{display:flex;align-items:center;gap:10px;text-decoration:none;flex-shrink:0}.nav-logo{width:32px;height:32px;border-radius:6px;background:var(--red);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;color:#fff}
-    .nav-brand-text{font-size:14px;font-weight:700;color:var(--text)}.nav-brand-text span{color:var(--red)}
-    .nav-divider{width:1px;height:20px;background:var(--border2);flex-shrink:0}
-    .nav-links{display:flex;align-items:center;gap:2px;flex:1}
-    .nav-link{display:flex;align-items:center;gap:6px;padding:6px 11px;border-radius:6px;font-size:13px;font-weight:500;color:var(--muted);text-decoration:none;transition:all 0.15s;white-space:nowrap}
-    .nav-link:hover{background:var(--card);color:var(--text)}.nav-link.active{background:var(--red-dim);color:var(--red);font-weight:600}
-    .nav-right{display:flex;align-items:center;gap:10px;margin-left:auto;flex-shrink:0}.nav-time{font-size:12px;color:var(--sub)}
-    .nav-admin-chip{display:flex;align-items:center;gap:7px;background:var(--card);border:1px solid var(--border2);border-radius:20px;padding:4px 12px 4px 5px}
-    .nav-avatar{width:24px;height:24px;border-radius:50%;background:var(--red);color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center}
-    .nav-admin-name{font-size:12px;font-weight:600}.nav-logout{font-size:12px;color:var(--sub);text-decoration:none;padding:5px 9px;border-radius:5px;border:1px solid var(--border);transition:all 0.15s}
-    .nav-logout:hover{color:var(--text);border-color:var(--border2)}
+    .sidebar{position:fixed;top:0;left:0;width:240px;height:100vh;background:var(--surface);border-right:1px solid var(--border);z-index:200;display:flex;flex-direction:column}
+    .side-brand{display:flex;align-items:center;gap:10px;text-decoration:none;padding:18px 18px 14px;flex-shrink:0}
+    .side-logo{width:32px;height:32px;border-radius:6px;background:var(--red);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;color:#fff;flex-shrink:0}
+    .side-brand-text{font-size:14px;font-weight:700;color:var(--text)}.side-brand-text span{color:var(--red)}
+    .side-nav{flex:1;padding:4px 12px;display:flex;flex-direction:column;gap:2px;overflow-y:auto}
+    .side-link{display:flex;align-items:center;gap:9px;padding:9px 12px;border-radius:0 6px 6px 0;font-size:13px;font-weight:500;color:var(--muted);text-decoration:none;border-left:3px solid transparent;transition:all 0.15s;white-space:nowrap}
+    .side-link:hover{background:var(--card);color:var(--text)}.side-link.active{background:var(--red-dim);color:var(--red);font-weight:600;border-left-color:var(--red)}
+    .side-bottom{border-top:1px solid var(--border);padding:14px;flex-shrink:0}
+    .side-chip{display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--border2);border-radius:20px;padding:4px 12px 4px 5px;margin-bottom:8px;min-width:0}
+    .side-avatar{width:24px;height:24px;border-radius:50%;background:var(--red);color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+    .side-name{font-size:12px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .side-logout{display:block;text-align:center;font-size:12px;color:var(--sub);text-decoration:none;padding:6px 9px;border-radius:5px;border:1px solid var(--border);transition:all 0.15s}
+    .side-logout:hover{color:var(--text);border-color:var(--border2)}
+    .main{margin-left:240px;min-height:100vh}
     .banner{position:relative;height:var(--banner-h);overflow:hidden;border-bottom:1px solid var(--border)}
     .banner-fallback{position:absolute;inset:0;background:repeating-linear-gradient(90deg,rgba(220,38,38,0.05) 0,rgba(220,38,38,0.05) 1px,transparent 1px,transparent 64px),repeating-linear-gradient(0deg,rgba(220,38,38,0.05) 0,rgba(220,38,38,0.05) 1px,transparent 1px,transparent 64px),linear-gradient(135deg,#130303 0%,#1c0505 50%,#0d0d0d 100%)}
     .banner-overlay{position:absolute;inset:0;background:linear-gradient(to right,rgba(13,13,13,0.88) 0%,rgba(13,13,13,0.5) 55%,rgba(13,13,13,0.15) 100%)}
@@ -126,30 +128,30 @@ $conn->close();
     .kpi-lbl{font-size:10px;color:var(--sub);font-weight:600;text-transform:uppercase;letter-spacing:0.5px}
     @media(max-width:1100px){.stats-grid,.three-col{grid-template-columns:1fr 1fr}}
     @media(max-width:900px){.two-col{grid-template-columns:1fr}.kpi-row{grid-template-columns:1fr}}
-    @media(max-width:768px){.nav-links{display:none}.wrapper{padding:20px 16px}.banner-content{padding:0 20px}.banner-right{display:none}}
+    @media(max-width:768px){.sidebar{position:static;width:100%;height:auto;border-right:none;border-bottom:1px solid var(--border)}.main{margin-left:0}.wrapper{padding:20px 16px}.banner-content{padding:0 20px}.banner-right{display:none}}
   </style>
 </head>
 <body>
 
-<nav class="topnav">
-  <a href="admin.php" class="nav-brand"><div class="nav-logo">FX</div><div class="nav-brand-text">FitX <span>Admin</span></div></a>
-  <div class="nav-divider"></div>
- <div class="nav-links">
-  <a href="admin.php"                 class="nav-link">⊞ Dashboard</a>
-  <a href="all_members.php"           class="nav-link">👥 Members</a>
-  <a href="payments.php"              class="nav-link">💳 Payments</a>
-  <a href="admin_enroll_rfid.php"     class="nav-link">📶 Enroll RFID</a>
-  <a href="admin_checkin.php"         class="nav-link">🚪 Check-In Kiosk</a>
-  <a href="analytics.php"             class="nav-link active">📈 Analytics</a>
-  <a href="admin_client_activity.php" class="nav-link">📋 Client Activity</a>
-  <a href="settings.php"              class="nav-link">⚙️ Settings</a>
-</div>
-  <div class="nav-right">
-    <span class="nav-time" id="live-time"></span>
-    <div class="nav-admin-chip"><div class="nav-avatar"><?= strtoupper(substr($admin_name,0,1)) ?></div><span class="nav-admin-name"><?= htmlspecialchars($admin_name) ?></span></div>
-    <a href="logout.php" class="nav-logout">Log out</a>
+<!-- SIDEBAR -->
+<aside class="sidebar">
+  <a href="admin.php" class="side-brand"><div class="side-logo">FX</div><div class="side-brand-text">FitX <span>Admin</span></div></a>
+  <nav class="side-nav">
+    <a href="admin.php" class="side-link">⊞ Dashboard</a>
+    <a href="all_members.php" class="side-link">👥 Members</a>
+    <a href="payments.php" class="side-link">💳 Payments</a>
+    <a href="admin_enroll_rfid.php" class="side-link">📶 Enroll RFID</a>
+    <a href="admin_checkin.php" class="side-link">🚪 Check-In Kiosk</a>
+    <a href="analytics.php" class="side-link active">📈 Analytics</a>
+    <a href="settings.php" class="side-link">⚙️ Settings</a>
+  </nav>
+  <div class="side-bottom">
+    <div class="side-chip"><div class="side-avatar"><?= strtoupper(substr($admin_name,0,1)) ?></div><span class="side-name"><?= htmlspecialchars($admin_name) ?></span></div>
+    <a href="logout.php" class="side-logout">Log out</a>
   </div>
-</nav>
+</aside>
+
+<div class="main">
 
 <div class="banner">
   <div class="banner-fallback"></div><div class="banner-overlay"></div>
@@ -292,11 +294,6 @@ $conn->close();
     </div>
   </div>
 
-</div>
-
-<script>
-  function updateTime(){document.getElementById('live-time').textContent=new Date().toLocaleTimeString('en-PH',{hour:'2-digit',minute:'2-digit',hour12:true});}
-  updateTime();setInterval(updateTime,1000);
-</script>
+</div><!-- /.main -->
 </body>
 </html>
