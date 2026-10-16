@@ -3,31 +3,78 @@ require_once 'config.php';
 if (!isset($_SESSION['user_id'])) { header('Location: index.php'); exit; }
 if ($_SESSION['role'] !== 'admin') { header('Location: index.php'); exit; }
 
+require_once 'visit_helpers.php';
+auto_close_stale_visits($conn);
+
 $admin_name = $_SESSION['full_name'];
 
+// CSRF token for the manual check-out form
+if (empty($_SESSION['csrf'])) { $_SESSION['csrf'] = bin2hex(random_bytes(32)); }
+
+// Manual check-out: front desk closes a member's open visit (e.g. they forgot to tap out)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'checkout') {
+    if (!hash_equals($_SESSION['csrf'], (string)($_POST['csrf'] ?? ''))) {
+        http_response_code(403); exit('Invalid request.');
+    }
+    $uid = (int)($_POST['user_id'] ?? 0);
+    $done = 0;
+    if ($uid > 0) {
+        $st = $conn->prepare("UPDATE access_logs SET checked_out_at = NOW() WHERE user_id = ? AND access_granted = 1 AND checked_out_at IS NULL");
+        $st->bind_param('i', $uid); $st->execute(); $done = $st->affected_rows; $st->close();
+    }
+    header('Location: admin.php?out=' . ($done > 0 ? 1 : 0)); exit;
+}
+
+// All members, with current membership status derived from payments
 $r = $conn->query("
-    SELECT u.id, u.full_name, u.email, u.tier, u.fitness_level, u.created_at,
-           c.full_name AS coach_name
-    FROM users u LEFT JOIN users c ON c.id = u.coach_id
-    WHERE u.role = 'member' ORDER BY u.created_at DESC
+    SELECT u.id, u.full_name, u.email, u.created_at,
+           (SELECT MAX(p.expires_at) FROM payments p WHERE p.user_id = u.id AND p.status = 'paid') AS expires_at
+    FROM users u
+    WHERE u.role = 'member'
+    ORDER BY u.created_at DESC
 ");
 $all_members = $r->fetch_all(MYSQLI_ASSOC); $r->close();
 
+// Members currently inside the gym (checked in, not yet checked out)
 $r = $conn->query("
-    SELECT id, full_name,
-    (SELECT COUNT(*) FROM users WHERE coach_id = u.id AND role = 'member') AS client_count
-    FROM users u WHERE role = 'coach' ORDER BY full_name
+    SELECT u.id AS user_id, u.full_name, u.email, al.checked_in_at,
+           TIMESTAMPDIFF(MINUTE, al.checked_in_at, NOW()) AS minutes_inside
+    FROM access_logs al
+    JOIN users u ON u.id = al.user_id
+    WHERE al.access_granted = 1 AND al.checked_out_at IS NULL
+    ORDER BY al.checked_in_at DESC
+    LIMIT 8
 ");
-$all_coaches = $r->fetch_all(MYSQLI_ASSOC); $r->close();
+$currently_active = $r->fetch_all(MYSQLI_ASSOC); $r->close();
 
-$r = $conn->query("SELECT id, full_name, email, fitness_level FROM users WHERE role='member' AND tier='premium' AND (coach_id IS NULL OR coach_id=0)");
-$pending = $r->fetch_all(MYSQLI_ASSOC); $r->close();
+$r = $conn->query("SELECT COUNT(DISTINCT user_id) c FROM access_logs WHERE access_granted = 1 AND checked_out_at IS NULL");
+$active_now = (int)$r->fetch_assoc()['c']; $r->close();
 
-$r = $conn->query("SELECT COUNT(*) as c FROM users WHERE role='member'"); $total_members = $r->fetch_assoc()['c']; $r->close();
-$r = $conn->query("SELECT COUNT(*) as c FROM users WHERE role='member' AND tier='premium'"); $total_premium = $r->fetch_assoc()['c']; $r->close();
-$r = $conn->query("SELECT COUNT(*) as c FROM users WHERE role='coach'"); $total_coaches = $r->fetch_assoc()['c']; $r->close();
+$r = $conn->query("SELECT COUNT(DISTINCT user_id) c FROM access_logs WHERE access_granted = 1 AND DATE(checked_out_at) = CURDATE()");
+$checked_out_today = (int)$r->fetch_assoc()['c']; $r->close();
 
-// Recent Premium Activations — last 5 paid payments, newest first
+// Most recent completed visits (checked in and out)
+$r = $conn->query("
+    SELECT u.full_name, al.checked_in_at, al.checked_out_at,
+           TIMESTAMPDIFF(MINUTE, al.checked_in_at, al.checked_out_at) AS minutes_stayed
+    FROM access_logs al
+    JOIN users u ON u.id = al.user_id
+    WHERE al.access_granted = 1 AND al.checked_out_at IS NOT NULL
+    ORDER BY al.checked_out_at DESC
+    LIMIT 8
+");
+$recent_checkouts = $r->fetch_all(MYSQLI_ASSOC); $r->close();
+
+$r = $conn->query("SELECT COUNT(DISTINCT user_id) c FROM access_logs WHERE access_granted = 1 AND DATE(checked_in_at) = CURDATE()");
+$checked_in_today = (int)$r->fetch_assoc()['c']; $r->close();
+
+$r = $conn->query("SELECT COUNT(*) c FROM users WHERE role = 'member'");
+$total_members = (int)$r->fetch_assoc()['c']; $r->close();
+
+$r = $conn->query("SELECT COUNT(*) c FROM payments WHERE status = 'pending'");
+$pending_payments = (int)$r->fetch_assoc()['c']; $r->close();
+
+// Recent payments — last 5 paid, newest first
 $r = $conn->query("
     SELECT p.amount, p.paid_at, p.description,
            u.full_name, u.email
@@ -35,7 +82,7 @@ $r = $conn->query("
     WHERE p.status = 'paid'
     ORDER BY p.paid_at DESC LIMIT 5
 ");
-$recent_activations = $r->fetch_all(MYSQLI_ASSOC); $r->close();
+$recent_payments = $r->fetch_all(MYSQLI_ASSOC); $r->close();
 
 $rev = $conn->query("SELECT SUM(amount) as total FROM payments WHERE status='paid' AND MONTH(paid_at)=MONTH(NOW()) AND YEAR(paid_at)=YEAR(NOW())")->fetch_assoc();
 $rev_total = $rev['total'] ?? 0;
@@ -49,6 +96,13 @@ function time_ago($datetime) {
     if ($diff < 86400)      return floor($diff/3600)  . ' hr ago';
     if ($diff < 604800)     return floor($diff/86400) . ' day' . (floor($diff/86400)>1?'s':'') . ' ago';
     return date('M j', strtotime($datetime));
+}
+
+// Helper: minutes inside -> "1h 20m" style
+function duration_label($minutes) {
+    $minutes = (int)$minutes;
+    if ($minutes < 60) return $minutes . 'm';
+    return floor($minutes/60) . 'h ' . ($minutes % 60) . 'm';
 }
 ?>
 <!DOCTYPE html>
@@ -145,10 +199,9 @@ function time_ago($datetime) {
 
     /* Pills */
     .pill { display: inline-block; font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 4px; }
-    .pill.premium    { background: var(--blue-dim);  color: #60a5fa; }
-    .pill.basic      { background: var(--border);    color: var(--sub); }
-    .pill.active     { background: var(--green-dim); color: #4ade80; }
-    .pill.unassigned { background: var(--red-dim);   color: #f87171; }
+    .pill.active   { background: var(--green-dim); color: #4ade80; }
+    .pill.expired  { background: var(--red-dim);   color: #f87171; }
+    .pill.basic    { background: var(--border);    color: var(--sub); }
 
     /* Tables */
     table { width: 100%; border-collapse: collapse; }
@@ -159,10 +212,12 @@ function time_ago($datetime) {
     .td-name { font-weight: 600; font-size: 13px; color: var(--text); }
     .td-email { font-size: 11px; color: var(--sub); margin-top: 1px; }
 
-    /* Activation feed */
+    /* Activity feed (shared by payments + currently-active lists) */
     .act-row { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--border); }
     .act-row:last-child { border-bottom: none; }
     .act-dot { width: 8px; height: 8px; border-radius: 50%; background: #4ade80; flex-shrink: 0; box-shadow: 0 0 6px rgba(74,222,128,0.5); }
+    .act-dot.pulse { animation: dotpulse 1.8s infinite; }
+    @keyframes dotpulse { 0%,100% { opacity:1; } 50% { opacity:0.35; } }
     .act-info { flex: 1; min-width: 0; }
     .act-name { font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .act-desc { font-size: 11px; color: var(--sub); margin-top: 1px; }
@@ -170,33 +225,17 @@ function time_ago($datetime) {
     .act-amount { font-size: 13px; font-weight: 700; color: #4ade80; }
     .act-time { font-size: 10px; color: var(--sub); margin-top: 2px; }
 
-    /* Buttons */
-    .btn-assign { border: 1px solid var(--border2); background: transparent; color: var(--muted); border-radius: 5px; padding: 5px 12px; font-family: var(--font); font-size: 11px; font-weight: 600; cursor: pointer; transition: all 0.15s; }
-    .btn-assign:hover { border-color: #60a5fa; color: #60a5fa; background: var(--blue-dim); }
-
     /* Revenue */
     .rev-row { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
     .rev-row:last-child { border-bottom: none; }
     .rev-label { color: var(--muted); }
     .rev-val { font-weight: 600; }
 
-    /* Modal */
-    .overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 300; align-items: center; justify-content: center; backdrop-filter: blur(3px); }
-    .overlay.open { display: flex; }
-    .modal { background: var(--card); border: 1px solid var(--border2); border-radius: 10px; padding: 26px; width: 380px; max-width: 92vw; }
-    .modal-tag { font-size: 10px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; color: var(--red); margin-bottom: 6px; }
-    .modal h3 { font-size: 16px; font-weight: 700; margin-bottom: 4px; }
-    .modal .sub { font-size: 12px; color: var(--sub); margin-bottom: 20px; }
-    .field { margin-bottom: 12px; }
-    .field label { display: block; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--sub); margin-bottom: 5px; }
-    .field select { width: 100%; background: var(--surface); border: 1px solid var(--border2); border-radius: 6px; padding: 9px 11px; font-family: var(--font); font-size: 13px; color: var(--text); outline: none; }
-    .field select:focus { border-color: #60a5fa; }
-    .field select option { background: var(--surface); }
-    .modal-btns { display: flex; gap: 8px; margin-top: 18px; }
-    .btn-confirm { flex: 1; background: var(--red); color: #fff; border: none; border-radius: 6px; padding: 10px; font-family: var(--font); font-size: 13px; font-weight: 700; cursor: pointer; }
-    .btn-confirm:hover { background: var(--red-mid); }
-    .btn-cancel { background: transparent; color: var(--sub); border: 1px solid var(--border2); border-radius: 6px; padding: 10px 16px; font-family: var(--font); font-size: 13px; cursor: pointer; }
-    .btn-cancel:hover { color: var(--text); }
+    /* Check-out */
+    .act-dot.out { background: #666; box-shadow: none; }
+    .btn-out { background: transparent; color: #f87171; border: 1px solid rgba(220,38,38,0.4); border-radius: 6px; padding: 5px 10px; font-size: 11px; font-weight: 700; font-family: var(--font); cursor: pointer; transition: all 0.15s; flex-shrink: 0; }
+    .btn-out:hover { background: var(--red-dim); border-color: var(--red); color: #fff; }
+    .alert-amber { background: var(--amber-dim); border: 1px solid rgba(217,119,6,0.25); color: #fbbf24; font-size: 13px; padding: 10px 16px; border-radius: 7px; margin-bottom: 20px; font-weight: 500; }
 
     @media (max-width: 1100px) { .stats-grid { grid-template-columns: 1fr 1fr; } }
     @media (max-width: 900px)  { .two-col { grid-template-columns: 1fr; } }
@@ -213,13 +252,12 @@ function time_ago($datetime) {
   </a>
   <div class="nav-divider"></div>
  <div class="nav-links">
-  <a href="admin.php"                 class="nav-link">⊞ Dashboard</a>
+  <a href="admin.php"                 class="nav-link active">⊞ Dashboard</a>
   <a href="all_members.php"           class="nav-link">👥 Members</a>
   <a href="payments.php"              class="nav-link">💳 Payments</a>
   <a href="admin_enroll_rfid.php"     class="nav-link">📶 Enroll RFID</a>
   <a href="admin_checkin.php"         class="nav-link">🚪 Check-In Kiosk</a>
   <a href="analytics.php"             class="nav-link">📈 Analytics</a>
-  <a href="admin_client_activity.php" class="nav-link">📋 Client Activity</a>
   <a href="settings.php"              class="nav-link">⚙️ Settings</a>
   <a href="admin_access_codes.php" class="nav-link">🔑 Access Codes</a>
 </div>
@@ -252,8 +290,12 @@ function time_ago($datetime) {
 
 <div class="wrapper">
 
-  <?php if (isset($_GET['assigned'])): ?>
-    <div class="alert-green">✓ Coach assigned successfully</div>
+  <?php if (isset($_GET['out'])): ?>
+    <?php if ($_GET['out'] === '1'): ?>
+      <div class="alert-green">Member checked out.</div>
+    <?php else: ?>
+      <div class="alert-amber">That member had no open check-in.</div>
+    <?php endif; ?>
   <?php endif; ?>
 
   <!-- Stats -->
@@ -267,27 +309,27 @@ function time_ago($datetime) {
       </div>
     </div>
     <div class="scard">
-      <div class="scard-icon ic-green">⭐</div>
+      <div class="scard-icon ic-green">🟢</div>
       <div>
-        <div class="scard-val" style="color:#4ade80"><?= $total_premium ?></div>
-        <div class="scard-lbl">Premium Members</div>
-        <div class="scard-note">Active coaching</div>
+        <div class="scard-val" style="color:#4ade80"><?= $active_now ?></div>
+        <div class="scard-lbl">Active Now</div>
+        <div class="scard-note">Currently in the gym</div>
       </div>
     </div>
     <div class="scard">
-      <div class="scard-icon ic-amber">🏋️</div>
+      <div class="scard-icon ic-amber">🚪</div>
       <div>
-        <div class="scard-val" style="color:#fbbf24"><?= $total_coaches ?></div>
-        <div class="scard-lbl">Coaches</div>
-        <div class="scard-note">Staff accounts</div>
+        <div class="scard-val" style="color:#fbbf24"><?= $checked_in_today ?></div>
+        <div class="scard-lbl">Checked In Today</div>
+        <div class="scard-note">Unique visits · <?= $checked_out_today ?> checked out</div>
       </div>
     </div>
     <div class="scard">
-      <div class="scard-icon ic-red">🔗</div>
+      <div class="scard-icon ic-red">⏳</div>
       <div>
-        <div class="scard-val" style="color:#f87171"><?= count($pending) ?></div>
-        <div class="scard-lbl">Unassigned Premium</div>
-        <div class="scard-note"><?= count($pending) > 0 ? 'Needs coach assignment' : 'All assigned' ?></div>
+        <div class="scard-val" style="color:#f87171"><?= $pending_payments ?></div>
+        <div class="scard-lbl">Pending Payments</div>
+        <div class="scard-note"><?= $pending_payments > 0 ? 'Awaiting verification' : 'All clear' ?></div>
       </div>
     </div>
   </div>
@@ -295,17 +337,17 @@ function time_ago($datetime) {
   <!-- Two columns -->
   <div class="two-col">
 
-    <!-- NEW: Recent Premium Activations feed -->
+    <!-- Recent Payments feed -->
     <div class="section">
       <div class="section-head">
-        <span class="section-title">Premium Activations</span>
+        <span class="section-title">Recent Payments</span>
         <a href="payments.php" style="font-size:11px;color:#60a5fa;text-decoration:none;font-weight:600;">View all →</a>
       </div>
-      <?php if (empty($recent_activations)): ?>
-        <div class="section-empty">No activations yet.</div>
+      <?php if (empty($recent_payments)): ?>
+        <div class="section-empty">No payments yet.</div>
       <?php else: ?>
       <div class="section-body" style="padding-top:2px;">
-        <?php foreach ($recent_activations as $act): ?>
+        <?php foreach ($recent_payments as $act): ?>
         <div class="act-row">
           <div class="act-dot"></div>
           <div class="act-info">
@@ -322,75 +364,77 @@ function time_ago($datetime) {
       <?php endif; ?>
     </div>
 
-    <!-- Pending Coach Assignments (untouched) -->
+    <!-- Currently Checked In -->
     <div class="section">
       <div class="section-head">
-        <span class="section-title">Pending Coach Assignments</span>
-        <span class="pill unassigned"><?= count($pending) ?> unassigned</span>
+        <span class="section-title">Currently Checked In</span>
+        <a href="admin_checkin.php" style="font-size:11px;color:#60a5fa;text-decoration:none;font-weight:600;">Kiosk →</a>
       </div>
-      <?php if (empty($pending)): ?>
-        <div class="section-empty">No unassigned premium members.</div>
+      <?php if (empty($currently_active)): ?>
+        <div class="section-empty">No one is checked in right now.</div>
       <?php else: ?>
-      <div class="section-body">
-        <table>
-          <thead><tr><th>Member</th><th>Level</th><th>Action</th></tr></thead>
-          <tbody>
-            <?php foreach ($pending as $p): ?>
-            <tr>
-              <td>
-                <div class="td-name"><?= htmlspecialchars($p['full_name']) ?></div>
-                <div class="td-email"><?= htmlspecialchars($p['email']) ?></div>
-              </td>
-              <td><?= ucfirst($p['fitness_level']) ?></td>
-              <td><button class="btn-assign" onclick="openModal(<?= $p['id'] ?>, '<?= htmlspecialchars($p['full_name'], ENT_QUOTES) ?>')">Assign →</button></td>
-            </tr>
-            <?php endforeach; ?>
-          </tbody>
-        </table>
+      <div class="section-body" style="padding-top:2px;">
+        <?php foreach ($currently_active as $ca): ?>
+        <div class="act-row">
+          <div class="act-dot pulse"></div>
+          <div class="act-info">
+            <div class="act-name"><?= htmlspecialchars($ca['full_name']) ?></div>
+            <div class="act-desc">In since <?= date('g:i A', strtotime($ca['checked_in_at'])) ?></div>
+          </div>
+          <div class="act-right">
+            <div class="act-amount" style="color:#60a5fa"><?= duration_label($ca['minutes_inside']) ?></div>
+            <div class="act-time">inside</div>
+          </div>
+          <form method="post" onsubmit="return confirm('Check this member out now?');" style="margin:0;">
+            <input type="hidden" name="action" value="checkout">
+            <input type="hidden" name="csrf" value="<?= htmlspecialchars($_SESSION['csrf']) ?>">
+            <input type="hidden" name="user_id" value="<?= (int)$ca['user_id'] ?>">
+            <button type="submit" class="btn-out">Check out</button>
+          </form>
+        </div>
+        <?php endforeach; ?>
       </div>
       <?php endif; ?>
     </div>
 
   </div>
 
-  <!-- All Members (untouched) -->
-  <div class="section full-col">
-    <div class="section-head">
-      <span class="section-title">All Members</span>
-      <span class="pill basic"><?= count($all_members) ?> total</span>
-    </div>
-    <div class="section-body">
-      <table>
-        <thead><tr><th>Member</th><th>Level</th><th>Tier</th><th>Coach</th><th>Joined</th><th>Status</th></tr></thead>
-        <tbody>
-          <?php if (empty($all_members)): ?>
-            <tr><td colspan="6" style="text-align:center;color:var(--sub);padding:20px 0;">No members yet.</td></tr>
-          <?php else: foreach ($all_members as $m): ?>
-          <tr>
-            <td>
-              <div class="td-name"><?= htmlspecialchars($m['full_name']) ?></div>
-              <div class="td-email"><?= htmlspecialchars($m['email']) ?></div>
-            </td>
-            <td><?= ucfirst($m['fitness_level']) ?></td>
-            <td><span class="pill <?= $m['tier'] ?>"><?= ucfirst($m['tier']) ?></span></td>
-            <td><?= $m['coach_name'] ? htmlspecialchars($m['coach_name']) : '<span style="color:var(--sub)">—</span>' ?></td>
-            <td><?= date('M j, Y', strtotime($m['created_at'])) ?></td>
-            <td><span class="pill active">Active</span></td>
-          </tr>
-          <?php endforeach; endif; ?>
-        </tbody>
-      </table>
-    </div>
-  </div>
+  <!-- Recent Check-Outs + Revenue -->
+  <div class="two-col">
 
-  <!-- Revenue (untouched) -->
-  <div class="section full-col">
+    <div class="section">
+      <div class="section-head">
+        <span class="section-title">Recent Check-Outs</span>
+        <span class="pill basic"><?= $checked_out_today ?> today</span>
+      </div>
+      <?php if (empty($recent_checkouts)): ?>
+        <div class="section-empty">No check-outs yet.</div>
+      <?php else: ?>
+      <div class="section-body" style="padding-top:2px;">
+        <?php foreach ($recent_checkouts as $co): ?>
+        <div class="act-row">
+          <div class="act-dot out"></div>
+          <div class="act-info">
+            <div class="act-name"><?= htmlspecialchars($co['full_name']) ?></div>
+            <div class="act-desc">In <?= date('g:i A', strtotime($co['checked_in_at'])) ?> &rarr; Out <?= date('g:i A', strtotime($co['checked_out_at'])) ?></div>
+          </div>
+          <div class="act-right">
+            <div class="act-amount" style="color:#a78bfa"><?= duration_label($co['minutes_stayed']) ?></div>
+            <div class="act-time"><?= time_ago($co['checked_out_at']) ?></div>
+          </div>
+        </div>
+        <?php endforeach; ?>
+      </div>
+      <?php endif; ?>
+    </div>
+
+  <div class="section">
     <div class="section-head">
       <span class="section-title">Revenue Summary — <?= date('F Y') ?></span>
     </div>
     <div class="section-body" style="padding-top:4px;">
       <div class="rev-row">
-        <span class="rev-label">Premium Coaching Payments</span>
+        <span class="rev-label">Payments This Month</span>
         <span class="rev-val" style="color:#60a5fa">₱<?= number_format($rev_total, 0) ?></span>
       </div>
       <div class="rev-row" style="font-weight:700;">
@@ -400,40 +444,40 @@ function time_ago($datetime) {
     </div>
   </div>
 
-</div>
-
-<!-- MODAL (untouched) -->
-<div class="overlay" id="modal">
-  <div class="modal">
-    <div class="modal-tag">Coach Assignment</div>
-    <h3>Assign a Coach</h3>
-    <p class="sub">Member: <strong id="modal-name" style="color:var(--text)"></strong></p>
-    <form action="assign_coach.php" method="POST">
-      <input type="hidden" name="member_id" id="modal-member-id"/>
-      <div class="field">
-        <label>Select Coach</label>
-        <select name="coach_id" required>
-          <option value="" disabled selected>Choose a coach</option>
-          <?php foreach ($all_coaches as $c): ?>
-            <option value="<?= $c['id'] ?>"><?= htmlspecialchars($c['full_name']) ?> (<?= $c['client_count'] ?> clients)</option>
-          <?php endforeach; ?>
-        </select>
-      </div>
-      <div class="modal-btns">
-        <button type="submit" class="btn-confirm">Confirm Assignment</button>
-        <button type="button" class="btn-cancel" onclick="closeModal()">Cancel</button>
-      </div>
-    </form>
   </div>
+
+  <!-- All Members -->
+  <div class="section full-col">
+    <div class="section-head">
+      <span class="section-title">All Members</span>
+      <span class="pill basic"><?= count($all_members) ?> total</span>
+    </div>
+    <div class="section-body">
+      <table>
+        <thead><tr><th>Member</th><th>Joined</th><th>Status</th></tr></thead>
+        <tbody>
+          <?php if (empty($all_members)): ?>
+            <tr><td colspan="3" style="text-align:center;color:var(--sub);padding:20px 0;">No members yet.</td></tr>
+          <?php else: foreach ($all_members as $m):
+            $is_active = $m['expires_at'] && strtotime($m['expires_at']) >= time();
+          ?>
+          <tr>
+            <td>
+              <div class="td-name"><?= htmlspecialchars($m['full_name']) ?></div>
+              <div class="td-email"><?= htmlspecialchars($m['email']) ?></div>
+            </td>
+            <td><?= date('M j, Y', strtotime($m['created_at'])) ?></td>
+            <td><span class="pill <?= $is_active ? 'active' : 'expired' ?>"><?= $is_active ? 'Active' : 'Expired' ?></span></td>
+          </tr>
+          <?php endforeach; endif; ?>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
 </div>
 
 <script>
-  function openModal(id, name) {
-    document.getElementById('modal-name').textContent = name;
-    document.getElementById('modal-member-id').value = id;
-    document.getElementById('modal').classList.add('open');
-  }
-  function closeModal() { document.getElementById('modal').classList.remove('open'); }
   function updateTime() {
     document.getElementById('live-time').textContent =
       new Date().toLocaleTimeString('en-PH', { hour:'2-digit', minute:'2-digit', hour12:true });
