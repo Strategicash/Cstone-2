@@ -149,6 +149,7 @@ $members = $conn->query("SELECT id, full_name, email, rfid_card_id FROM users WH
     <a href="all_members.php" class="side-link">👥 Members</a>
     <a href="payments.php" class="side-link">💳 Payments</a>
     <a href="admin_enroll_rfid.php" class="side-link active">📶 Enroll RFID</a>
+    <a href="admin_access_codes.php" class="side-link">🔑 Access Codes</a>
     <a href="admin_checkin.php" class="side-link">🚪 Check-In Kiosk</a>
     <a href="analytics.php" class="side-link">📈 Analytics</a>
     <a href="settings.php" class="side-link">⚙️ Settings</a>
